@@ -7,9 +7,26 @@
     "dev": "nodemon -w index.js -w 'test/**/*.js' -x 'npm run test'",
     "test": "node test/test.js"
   },
-  "keywords": ["recursive", "require", "async", "module", "tree"],
+  "keywords": [
+    "recursive",
+    "require",
+    "async",
+    "module",
+    "tree"
+  ],
   "author": "allnulled",
   "license": "WTFPL",
   "devDependencies": {},
-  "dependencies": {}
+  "dependencies": {},
+  "directories": {
+    "test": "test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/allnulled/recursive-api.git"
+  },
+  "bugs": {
+    "url": "https://github.com/allnulled/recursive-api/issues"
+  },
+  "homepage": "https://github.com/allnulled/recursive-api#readme"
 }
