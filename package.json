@@ -1,6 +1,6 @@
 {
   "name": "recursive-api",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Import (nested) files and folders to compose a Node.js tree of values (asynchronously or not). No dependencies at all. Less than 200 lines of code.",
   "main": "index.js",
   "scripts": {

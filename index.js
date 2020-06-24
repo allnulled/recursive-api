@@ -10,137 +10,145 @@ const asynchandler = function(ok, fail) {
 		return;
 	}
 };
-
+//*
+global.dd = (...args) => {
+	console.log(...args);
+	process.exit(9);
+}
+//*/
+const REGEX_SORTER = /^([0-9]+)(\.[0-9]+)*($|\.)/g;
+const REGEX_ATTRIBUTES = /^(norun|noadd)($|\.)/gi;
+const REGEX_EXTENSION = /\.js$/gi;
 const utils = {
 	strings: {
-		obtainFilename: function(file) {
-			let str = path.basename(file);
-			str = utils.strings.removeFilenameRules(str);
-			str = utils.strings.removeFilenameSorter(str);
-			str = utils.strings.removeFilenameExtension(str);
-			return str;
+		extractId(filename) {
+			return filename
+				.replace(REGEX_SORTER, "")
+				.replace(REGEX_ATTRIBUTES, "")
+				.replace(REGEX_EXTENSION, "");
 		},
-		removeFilenameRules: function(file) {
-			return path.basename(file).replace(/^(norun|noadd)\.?/g, "")
-		},
-		removeFilenameSorter: function(file) {
-			return path.basename(file)
-				.replace(/^[0-9]+\.([0-9]+\.)* */g, "")
-				.replace(/^[0-9]+$/g, "")
-		},
-		removeFilenameExtension: function(file) {
-			return path.basename(file)
-				.replace(/\.js$/g, "")
-				.replace(/^js$/g, "");
+		extractAttributes(filename) {
+			let filenameTmp = filename;
+			filenameTmp = filenameTmp.replace(REGEX_SORTER, "");
+			filenameTmp = filenameTmp.replace(REGEX_EXTENSION, "");
+			const matches = filenameTmp.match(REGEX_ATTRIBUTES);
+			if (matches && matches.length) {
+				return matches.map(m => m.replace(/\.$/gi, ""));
+			}
+			return [];
 		}
 	},
 	js: {
-		requireAny: async function(nodeP, context = {}) {
-			try {
-				const node = utils.fs.resolve(nodeP);
-				const nodeExists = await utils.fs.exists(node);
-				if (!nodeExists) {
-					throw new Error("Imported file <node> does not exist: " + node)
-				}
-				const nodeStats = await utils.fs.stats(node);
-				if (nodeStats.isFile()) {
-					if(!node.endsWith(".js")) {
-						return undefined;
-					}
-					return await utils.js.requireFile(node, context);
-				} else if (nodeStats.isDirectory()) {
-					return await utils.js.requireDirectory(node, context);
-				} else {
-					throw new Error("Imported file <node> is not a file or a directory");
-				}
-			} catch (error) {
-				console.error(error);
-			}
-		},
-		requireFile: async function(fileP, contextP = {}) {
-			try {
-				const file = utils.fs.resolve(fileP);
-				const modulo = require(file);
-				const context = Object.assign({}, contextP);
-				if (typeof modulo === "object" && modulo.recursiveapi === true && typeof modulo.build === "function") {
-					return await modulo.build.call(context.parent, context, framework, modulo, file);
-				} else {
-					return modulo;
-				}
-			} catch (error) {
-				console.error(error);
-			}
-		},
-		requireDirectory: async function(directoryP, contextP = {}) {
+		adaptModule: async function(nodeModule, context, parameters) {
 			try {
 				let output = undefined;
-				const directory = utils.fs.resolve(directoryP);
-				const filenames = await utils.fs.list(directory);
-				const filepaths = filenames.map(file => utils.fs.resolve(directory, file));
-				// 0. Sort files:
-				// 1. Import index file:
-				let indexSource = undefined;
-				for (let index = 0; index < filepaths.length; index++) {
-					const filepath = filepaths[index];
-					if (filepath.endsWith("/index.js")) {
-						const lstatFile = await utils.fs.stats(filepath);
-						if (lstatFile.isFile()) {
-							indexSource = { file: filepath, index };
-						}
+				if (typeof nodeModule === "object" && nodeModule.recursiveapi === true) {
+					if (typeof nodeModule.build === "function") {
+						output = await nodeModule.build.call(nodeModule, context, parameters);
+					} else {
+						output = nodeModule.build;
 					}
-				}
-				const context = Object.assign({}, contextP);
-				if (indexSource) {
-					output = await utils.js.requireAny(indexSource.file, context);
-					// 2. Remove index file from list of files:
-					filepaths.splice(indexSource.index, 1);
 				} else {
-					output = {};
+					output = nodeModule;
 				}
-				if (!context.root) {
-					context.root = output;
-				}
-				// 3. Import the rest of the directory:
-				ImportingDirectory:
-					for (let index = 0; index < filepaths.length; index++) {
-						const filepath = filepaths[index];
-						const filename1 = utils.strings.removeFilenameSorter(filepath);
-						const filename = utils.strings.removeFilenameExtension(filename1);
-						const filestats = await utils.fs.stats(filepath);
-						const isDirectory = filestats.isDirectory();
-						let fileContext = undefined;
-						/////////////////////////////
-						/////////////////////////////
-						/////////////////////////////
-						if (filename === "") {
-							if (isDirectory) {
-								fileContext = context;
-							} else {
-								fileContext = Object.assign({}, context, { parent: output });
-							}
-						} else {
-							fileContext = Object.assign({}, context, { parent: output });
-						}
-						if (filename.match(/^norun($|\.?)/gi)) {
-							continue ImportingDirectory;
-						}
-						if(!isDirectory && !filepath.endsWith(".js")) {
-							// @NOTHING with a non-js file
-						} else {
-							const value = await utils.js.requireAny(filepath, fileContext);
-							if (filename === "") {
-								continue ImportingDirectory;
-							}
-							if (filename.match(/^noadd($|\.?)/gi)) {
-								continue ImportingDirectory;
-							}
-							output[filename] = value;
-						}
-						/////////////////////////////
-						/////////////////////////////
-						/////////////////////////////
-					}
 				return output;
+			} catch (error) {
+				console.error(error);
+				throw error;
+			}
+		},
+		setValue: function(context, value = undefined) {
+			if (context.noadd === true) {
+				return;
+			}
+			let { selector = [] } = context;
+			if (context.debug) {
+				console.log("Setting value by selector: ", selector, value);
+			}
+			if (selector.length === 0) {
+				context.root = value;
+				return;
+			}
+			let rootPivot = context.root;
+			for (let index = 0; index < selector.length; index++) {
+				const selectorRule = selector[index];
+				if (index === selector.length - 1) {
+					if (typeof rootPivot[selectorRule] === "undefined") {
+						rootPivot[selectorRule] = value;
+					}
+				} else {
+					rootPivot = rootPivot[selectorRule];
+				}
+			}
+			return;
+		},
+		recursiveRequire: function(nodeP, parameters = undefined, context = {}) {
+			return utils.js.requireAny(nodeP, parameters, context);
+		},
+		requireAny: async function(nodeP, parameters = undefined, contextP = {}) {
+			try {
+				const context = Object.assign({}, { root: {}, selector: [] }, contextP);
+				const nodePath = utils.fs.resolve(nodeP);
+				const nodeStat = await utils.fs.stats(nodePath);
+				const nodeIsFile = nodeStat.isFile();
+				await utils.js[nodeIsFile ? "requireFile" : "requireDirectory"](nodePath, context, parameters);
+				return context.root;
+			} catch (error) {
+				console.error(error);
+			}
+		},
+		requireFile: async function(nodeP, context, parameters = undefined) {
+			try {
+				const nodePath = utils.fs.resolve(nodeP);
+				const nodeName = path.basename(nodePath);
+				if (!nodeName.endsWith(".js")) return;
+				const nodeAttributes = utils.strings.extractAttributes(nodeName);
+				if (context.debug) {
+					//console.log("Including file: " + nodePath + " (" + nodeAttributes.join(", ") + ")");
+				}
+				const nodeHasNoAddRule = nodeAttributes.indexOf("noadd") !== -1;
+				const nodeHasNoRunRule = nodeAttributes.indexOf("norun") !== -1;
+				if (nodeHasNoRunRule) return;
+				const nodeModule = require(nodePath);
+				const nodeValue = await utils.js.adaptModule(nodeModule, context, parameters);
+				if (nodeHasNoAddRule) return;
+				utils.js.setValue(context, nodeValue);
+			} catch (error) {
+				console.error(error);
+			}
+		},
+		requireDirectory: async function(nodeP, context, parameters = undefined) {
+			try {
+				const nodePath = utils.fs.resolve(nodeP);
+				const nodeName = path.basename(nodePath);
+				const nodeChildren = await utils.fs.list(nodePath);
+				const nodeIndexPosition = nodeChildren.indexOf("index.js");
+				const nodeIndexPath = utils.fs.resolve(nodePath, "index.js");
+				const nodeAttributes = utils.strings.extractAttributes(nodeName);
+				const nodeHasNoAddRule = nodeAttributes.indexOf("noadd") !== -1;
+				const nodeHasNoRunRule = nodeAttributes.indexOf("norun") !== -1;
+				if (nodeHasNoRunRule) return;
+				if (nodeHasNoAddRule) context = Object.assign({}, context, { noadd: true });
+				if (nodeIndexPosition === -1) {
+					utils.js.setValue(context, {});
+				} else {
+					await utils.js.requireFile(nodeIndexPath, context, parameters);
+					nodeChildren.splice(nodeIndexPosition, 1);
+				}
+				for (let index = 0; index < nodeChildren.length; index++) {
+					const nodeChildName = nodeChildren[index];
+					const nodeChildId = utils.strings.extractId(nodeChildName);
+					const nodeChildPath = utils.fs.resolve(nodePath, nodeChildName);
+					const nodeStat = await utils.fs.stats(nodeChildPath);
+					const nodeIsDirectory = nodeStat.isDirectory();
+					const nodeChildSelector = nodeChildId ? [...context.selector, nodeChildId] : [...context.selector];
+					const nodeChildContext = Object.assign({}, context, { selector: nodeChildSelector });
+					if (nodeIsDirectory) {
+						await utils.js.requireDirectory(nodeChildPath, nodeChildContext, parameters);
+					} else {
+						await utils.js.requireFile(nodeChildPath, nodeChildContext, parameters);
+					}
+				}
 			} catch (error) {
 				console.error(error);
 			}
@@ -155,7 +163,7 @@ const utils = {
 }
 
 const framework = {
-	importNode: utils.js.requireAny,
+	recursiveRequire: utils.js.recursiveRequire,
 	utils,
 };
 
