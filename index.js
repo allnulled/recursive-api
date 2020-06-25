@@ -16,9 +16,16 @@ global.dd = (...args) => {
 	process.exit(9);
 }
 //*/
+const STRING_NOADD_RULE = "noadd";
+const STRING_NORUN_RULE = "norun";
+const STRING_OBJECT_RULE = "object";
+const STRING_ARRAY_RULE = "array";
+const STRING_FUNCTION_RULE = "function";
+const REGEX_ATTRIBUTES = /^(_norun|_noadd|_default|_object|_array|_function)($|\.)/gi;
+const REGEX_ATTRIBUTE_PREFIX = /^_/g;
+const REGEX_FINAL_DOT = /\.$/g;
 const REGEX_SORTER = /^([0-9]+)(\.[0-9]+)*($|\.)/g;
-const REGEX_ATTRIBUTES = /^(norun|noadd)($|\.)/gi;
-const REGEX_EXTENSION = /\.js$/gi;
+const REGEX_EXTENSION = /\.js(on)?$/gi;
 const utils = {
 	strings: {
 		extractId(filename) {
@@ -28,17 +35,38 @@ const utils = {
 				.replace(REGEX_EXTENSION, "");
 		},
 		extractAttributes(filename) {
-			let filenameTmp = filename;
-			filenameTmp = filenameTmp.replace(REGEX_SORTER, "");
-			filenameTmp = filenameTmp.replace(REGEX_EXTENSION, "");
-			const matches = filenameTmp.match(REGEX_ATTRIBUTES);
+			let filenamePivot = filename;
+			filenamePivot = filenamePivot.replace(REGEX_SORTER, "");
+			filenamePivot = filenamePivot.replace(REGEX_EXTENSION, "");
+			const matches = filenamePivot.match(REGEX_ATTRIBUTES);
 			if (matches && matches.length) {
-				return matches.map(m => m.replace(/\.$/gi, ""));
+				return matches.map(m => m
+						.replace(REGEX_ATTRIBUTE_PREFIX, "")
+						.replace(REGEX_FINAL_DOT, ""));
 			}
 			return [];
 		}
 	},
 	js: {
+		requireModule: function(filename, parameters = {}, context = {}) {
+			const filepath = require.resolve(filename);
+			let output = undefined;
+			if(context.cache === true) {
+				output = require(filepath);
+			} else {
+				const filecache = require.cache[filepath];
+				delete require.cache[filepath];
+				output = require(filepath);
+			}
+			return output;
+		},
+		assignAttributesToContext: function(attributes, context) {
+			for(let index=0; index < attributes.length; index++) {
+				const attribute = attributes[index];
+				context[attribute] = true;
+			}
+			return;
+		},
 		adaptModule: async function(nodeModule, context, parameters) {
 			try {
 				let output = undefined;
@@ -61,7 +89,7 @@ const utils = {
 			if (context.noadd === true) {
 				return;
 			}
-			let { selector = [] } = context;
+			const { selector = [] } = context;
 			if (context.debug) {
 				console.log("Setting value by selector: ", selector, value);
 			}
@@ -82,12 +110,12 @@ const utils = {
 			}
 			return;
 		},
-		recursiveRequire: function(nodeP, parameters = undefined, context = {}) {
-			return utils.js.requireAny(nodeP, parameters, context);
+		recursiveRequire: function(nodeP, contextP = {}, parametersP = undefined) {
+			return utils.js.requireAny(nodeP, contextP, parametersP);
 		},
-		requireAny: async function(nodeP, parameters = undefined, contextP = {}) {
+		requireAny: async function(nodeP, contextP = {}, parameters = undefined) {
 			try {
-				const context = Object.assign({}, { root: {}, selector: [] }, contextP);
+				const context = Object.assign({}, { root: {}, selector: [], cache: parameters && parameters.cache ? parameters.cache : false }, contextP);
 				const nodePath = utils.fs.resolve(nodeP);
 				const nodeStat = await utils.fs.stats(nodePath);
 				const nodeIsFile = nodeStat.isFile();
@@ -101,17 +129,19 @@ const utils = {
 			try {
 				const nodePath = utils.fs.resolve(nodeP);
 				const nodeName = path.basename(nodePath);
-				if (!nodeName.endsWith(".js")) return;
+				if (!nodeName.match(REGEX_EXTENSION)) return;
 				const nodeAttributes = utils.strings.extractAttributes(nodeName);
-				if (context.debug) {
-					//console.log("Including file: " + nodePath + " (" + nodeAttributes.join(", ") + ")");
+				utils.js.assignAttributesToContext(nodeAttributes, context);
+				if(context.norun) {
+					delete context.norun;
+					return;
 				}
-				const nodeHasNoAddRule = nodeAttributes.indexOf("noadd") !== -1;
-				const nodeHasNoRunRule = nodeAttributes.indexOf("norun") !== -1;
-				if (nodeHasNoRunRule) return;
-				const nodeModule = require(nodePath);
+				const nodeModule = utils.js.requireModule(nodePath, context, parameters);
 				const nodeValue = await utils.js.adaptModule(nodeModule, context, parameters);
-				if (nodeHasNoAddRule) return;
+				if(context.noadd) {
+					delete context.noadd;
+					return;
+				}
 				utils.js.setValue(context, nodeValue);
 			} catch (error) {
 				console.error(error);
@@ -125,16 +155,20 @@ const utils = {
 				const nodeIndexPosition = nodeChildren.indexOf("index.js");
 				const nodeIndexPath = utils.fs.resolve(nodePath, "index.js");
 				const nodeAttributes = utils.strings.extractAttributes(nodeName);
-				const nodeHasNoAddRule = nodeAttributes.indexOf("noadd") !== -1;
-				const nodeHasNoRunRule = nodeAttributes.indexOf("norun") !== -1;
-				if (nodeHasNoRunRule) return;
-				if (nodeHasNoAddRule) context = Object.assign({}, context, { noadd: true });
+				utils.js.assignAttributesToContext(nodeAttributes, context);
+				// 1. Prevent from running:
+				if(context.norun) {
+					delete context.norun;
+					return;
+				}
+				// 2. Assign value to module holder:
 				if (nodeIndexPosition === -1) {
 					utils.js.setValue(context, {});
 				} else {
 					await utils.js.requireFile(nodeIndexPath, context, parameters);
 					nodeChildren.splice(nodeIndexPosition, 1);
 				}
+				// 3. Assign children:
 				for (let index = 0; index < nodeChildren.length; index++) {
 					const nodeChildName = nodeChildren[index];
 					const nodeChildId = utils.strings.extractId(nodeChildName);
